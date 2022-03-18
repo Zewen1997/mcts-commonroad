@@ -5,6 +5,27 @@ __maintainer__ = "Chi Zhang"
 __email__ = "ge96vij@mytum.de"
 
 
+import os
+import matplotlib.pyplot as plt
+plt.rcParams.update({'figure.max_open_warning': 0})
+from IPython.display import clear_output
+
+# import classes and functions for reading xml file and visualizing commonroad objects
+from commonroad.common.file_reader import CommonRoadFileReader
+from commonroad.visualization.mp_renderer import MPRenderer
+from commonroad_dc.collision.collision_detection.pycrcc_collision_dispatch import create_collision_checker
+from commonroad_dc.collision.collision_detection.pycrcc_collision_dispatch import create_collision_object
+from commonroad.prediction.prediction import TrajectoryPrediction
+from commonroad_route_planner.route_planner import RoutePlanner
+from commonroad.common.util import Interval
+
+# generate path of the file to be read
+path_file = os.path.abspath('scenarios/exercise/USA_Peach-2_1_T-1.xml')
+
+# read in the scenario and planning problem set
+scenario, planning_problem_set = CommonRoadFileReader(path_file).open()
+
+
 from copy import deepcopy
 from scipy.spatial import distance
 from shapely.geometry import Polygon
@@ -17,6 +38,7 @@ from commonroad.geometry.shape import Rectangle
 from commonroad.planning.goal import GoalRegion
 from commonroad.planning.planning_problem import PlanningProblem
 from commonroad.scenario.trajectory import State, Trajectory
+from commonroad.scenario.obstacle import Obstacle
 
 class EgoState:
     def __init__(self, velocity=0, position=np.array([0.0, 0.0]), orientation=0, time_step=0, shape=Rectangle(length=4.5, width=2), goal=None):
@@ -74,7 +96,7 @@ class StateSpace:
             
         state.ego.position[0] += (state.ego.velocity * dt + 0.5 * action * dt ** 2) *  math.cos(math.radians(state.ego.orientation) / (math.pi / 2) * 90)
         state.ego.position[1] += (state.ego.velocity * dt + 0.5 * action * dt ** 2) *  math.sin(math.radians(state.ego.orientation) / (math.pi / 2) * 90)
-        waypoint_ego, index = self.getCurrentEgoWaypoint(state)
+        waypoint_ego, index = CommonroadEnv(scenario, planning_problem_set).get_current_ego_waypoint(state.ego)
         state.ego.position = waypoint_ego.position
         state.ego.orientation = waypoint_ego.orientation
         state.ego.velocity += action * dt
@@ -84,7 +106,21 @@ class StateSpace:
     def calculateNextVehicleState(self, state, dt):
         # Vehicles is a list of instances
         # Predict the state of vehicles
-                
+        list1 = DataHandler().sort_vehicle(state.ego, state.vehicles)
+        state.vehicles = []
+        for i in range(len(list1)):
+            state.vehicles.append(list1[i][0])
+            
+        for vehicle in state.vehicles:
+            vehicle.position += vehicle.velocity * dt * math.cos(math.radians(vehicle.orientation) / (math.pi / 2) * 90)
+        
+        i = 0
+        while i < 2:
+            waypoint_vehicle, index = CommonroadEnv(scenario, planning_problem_set).get_current_vehicle_waypoint(vehicle)
+            state.vehicles.position = waypoint_vehicle.position
+            state.vehicles.orientation = waypoint_vehicle.orientation
+            i = i + 1
+            
         return state.vehicles
     
     
@@ -139,19 +175,6 @@ class StateSpace:
             
         return Polygon(xy_list_rot_tra)
     
-    def getCurrentEgoWaypoint(self, state):
-        waypoints = CommonroadEnv(scenario, planning_problem_set).generate_waypoint_ego()
-        distance = []
-        for i in range(len(waypoints)):
-            d = np.linalg.norm(state.ego.position - waypoints[i].position) 
-            distance.append(d)
-
-        return waypoints[distance.index(min(distance))], distance.index(min(distance))
-    
-    def getCurrentVehicleWaypoint(self, vehicle):
-        waypoints = CommonroadEnv(scenario, planning_problem_set).generate_waypoint_vehicle(vehicle)
-        return 0
-    
     def isTerminal(self):
         return self.status.is_reached or self.status.is_collided
     
@@ -168,6 +191,9 @@ class StateSpace:
 
         return speed_reward + action_reward
 
+"""
+MCTS
+"""
 
 def randomPolicy(state):
     accum_reward = 0
@@ -285,27 +311,6 @@ class mcts():
         return random.choice(bestNodes)
 
 
-import os
-import matplotlib.pyplot as plt
-plt.rcParams.update({'figure.max_open_warning': 0})
-from IPython.display import clear_output
-
-# import classes and functions for reading xml file and visualizing commonroad objects
-from commonroad.common.file_reader import CommonRoadFileReader
-from commonroad.visualization.mp_renderer import MPRenderer
-from commonroad_dc.collision.collision_detection.pycrcc_collision_dispatch import create_collision_checker
-from commonroad_dc.collision.collision_detection.pycrcc_collision_dispatch import create_collision_object
-from commonroad.prediction.prediction import TrajectoryPrediction
-from commonroad_route_planner.route_planner import RoutePlanner
-from commonroad.common.util import Interval
-
-# generate path of the file to be read
-path_file = "/Users/chenzewen/Downloads/commonroad-search-master/scenarios/exercise/USA_Peach-2_1_T-1.xml"
-
-# read in the scenario and planning problem set
-scenario, planning_problem_set = CommonRoadFileReader(path_file).open()
-    
-
 class Waypoint():
     def __init__(self, position=np.array([0.0, 0.0]), orientation=0, length=0):
         self.position = position
@@ -351,7 +356,7 @@ class CommonroadEnv():
         
         return vehicles_initial_state
         
-    def generate_waypoint_ego(self) -> list:
+    def generate_waypoints_ego(self) -> list:
         # generate waypoints from ego
         route_planner_ego = RoutePlanner(self.scenario, list(self.planning_problem_set.planning_problem_dict.values())[0], backend=RoutePlanner.Backend.NETWORKX_REVERSED)
         candidate_holder_ego = route_planner_ego.plan_routes()
@@ -367,7 +372,7 @@ class CommonroadEnv():
         
         return waypoints_ego
     
-    def generate_waypoint_vehicle(self, vehicle) -> dict:
+    def generate_waypoints_vehicle(self, vehicle: Obstacle) -> dict:
         # generate waypoints from vehicles
         state_vehicle = State(position=vehicle.initial_state.position, 
                               velocity=vehicle.initial_state.velocity, 
@@ -397,9 +402,30 @@ class CommonroadEnv():
             
         return waypoints_vehicle
     
+    def get_current_ego_waypoint(self, ego):
+        waypoints = self.generate_waypoints_ego()
+        distance = []
+        for i in range(len(waypoints)):
+            d = np.linalg.norm(ego.position - waypoints[i].position) 
+            distance.append(d)
+
+        return waypoints[distance.index(min(distance))], distance.index(min(distance))
+    
+    def get_current_vehicle_waypoint(self, vehicle):
+        waypoints = self.generate_waypoints_vehicle(vehicle)
+        waypoints = DataHandler().choose_vehicle_route(waypoints)
+        distance = []
+        for i in range(len(waypoints)):
+            d = np.linalg.norm(ego.position - waypoints[i].position) 
+            distance.append(d)
+
+        return waypoints[distance.index(min(distance))], distance.index(min(distance))
+    
     def start(self):
         self.state.ego = self.ego_initial_state
         self.state.vehicles = self.vehicles_initial_state
+        
+        """
         
         for i in range(0, 20):
             plt.figure(figsize=(10, 10))
@@ -416,6 +442,8 @@ class CommonroadEnv():
 
             renderer.render()
             plt.show()
+            
+        """
         
         return self.state
     
@@ -429,8 +457,11 @@ class CommonroadEnv():
         
         self.state.ego.position[0] += (self.state.ego.velocity * self.dt + 0.5 * action * self.dt ** 2) * math.cos(math.radians(self.state.ego.orientation) / (math.pi / 2) * 90)
         self.state.ego.position[1] += (self.state.ego.velocity * self.dt + 0.5 * action * self.dt ** 2) * math.sin(math.radians(self.state.ego.orientation) / (math.pi / 2) * 90)
+        waypoint_ego, index = self.get_current_ego_waypoint(self.state.ego)
+        self.state.ego.position = waypoint_ego.position
+        self.state.ego.orientation = waypoint_ego.orientation
+        self.state.ego.velocity += action * self.dt
         
-        self.state.ego.velocity = self.state.ego.velocity + action * self.dt
         if self.state.ego.velocity < 0:
             self.state.ego.velocity = 0
         self.time_step = self.time_step + 1
@@ -439,7 +470,8 @@ class CommonroadEnv():
             vehicle.position = self.get_obstacle_state_at_time()['dynamic'][vehicle.ID].position
             vehicle.orientation = self.get_obstacle_state_at_time()['dynamic'][vehicle.ID].orientation
             vehicle.velocity = self.get_obstacle_state_at_time()['dynamic'][vehicle.ID].velocity
-            
+        
+        
         self.done = self.is_done()
         self.reward = self.get_reward()
             
@@ -479,8 +511,8 @@ class CommonroadEnv():
     def is_collided(self):
         cc = create_collision_checker(scenario)
 
-        new_state = State(position = self.state.ego.position, orientation = self.state.ego.orientation, time_step = self.time_step)
-        self.trajectory_state_list.append(new_state)    
+        new_ego_state = State(position = self.state.ego.position, orientation = self.state.ego.orientation, time_step = self.time_step)
+        self.trajectory_state_list.append(new_ego_state)    
         ego_trajectory = Trajectory(0, self.trajectory_state_list)
         
         # create a TrajectoryPrediction object consisting of the trajectory and the shape of the ego vehicle
@@ -514,6 +546,26 @@ class CommonroadEnv():
             obstacle_states['static'][obstacle.obstacle_id] = obstacle.initial_state
 
         return obstacle_states
+
+
+class DataHandler():
+    def __init__(self, number_vehicle_to_handle=5, method_sort_vehicle='nearst_vehicle', method_choose_route='random'):
+        self.number_vehicle_to_handle = number_vehicle_to_handle
+        self.method_sort_vehicle = method_sort_vehicle
+        self.method_choose_route = method_choose_route
+        
+    def sort_vehicle(self, ego: EgoState, vehicles: VehicleState) -> VehicleState:
+        # Sorted the several important vehicles by such as distance between ego and vehicle
+        if self.method_sort_vehicle == 'nearst_vehicle':
+            considered_vehicles = [[vehicle, distance.euclidean(ego.position, vehicle.position)] for vehicle in vehicles 
+                                   if distance.euclidean(ego.position, vehicle.position) < 30]
+            considered_vehicles = sorted(considered_vehicles, key=(lambda x: x[1]))[0:self.number_vehicle_to_handle]
+            
+            return considered_vehicles
+    
+    def choose_vehicle_route(self, route_waypoint):
+        if self.method_choose_route == 'random':
+            return route_waypoint[random.randint(0,len(route_waypoint) - 1)]
 
 
 import numpy as np
@@ -558,5 +610,8 @@ if __name__ == "__main__":
     plt.ylabel('score')
     plt.xlabel('Episode')
     plt.show()
+
+
+
 
 

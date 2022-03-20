@@ -20,7 +20,7 @@ from commonroad_route_planner.route_planner import RoutePlanner
 from commonroad.common.util import Interval
 
 # generate path of the file to be read
-path_file = os.path.abspath('scenarios/exercise/USA_Peach-2_1_T-1.xml')
+path_file = os.path.abspath('scenarios/exercise/DEU_Flensburg-2_1_T-1.xml')
 
 # read in the scenario and planning problem set
 scenario, planning_problem_set = CommonRoadFileReader(path_file).open()
@@ -41,7 +41,7 @@ from commonroad.scenario.trajectory import State, Trajectory
 from commonroad.scenario.obstacle import Obstacle
 
 class EgoState:
-    def __init__(self, velocity=0, position=np.array([0.0, 0.0]), orientation=0, time_step=0, shape=Rectangle(length=4.5, width=2), goal=None):
+    def __init__(self, velocity=0, position=np.array([0.0, 0.0]), orientation=0, time_step=0, shape=Rectangle(length=4.3, width=1.8), goal=None):
         self.velocity = velocity
         self.position = position
         self.orientation = orientation # The orientation is in radians, converted into an angle as "redians * 180 / Pi"
@@ -73,7 +73,7 @@ class StateSpace:
         self.status = Status()
         
     def getPossibleActions(self):
-        return [-5, -2.5, -1.5, 0.0, 1.5, 2.5]
+        return [-6, -2.5, -1.5, 0.0, 1.5, 2.5]
         
     def takeAction(self, action, dt = 0.1):
         state = deepcopy(self)
@@ -82,7 +82,7 @@ class StateSpace:
         state.ego = self.calculateNextEgoState(state, action, dt)
         
         # Update next vehicles state
-        state.vehicle = self.calculateNextVehicleState(state, dt)
+        state.vehicles = self.calculateNextVehicleState(state, dt)
         
         # Update status between ego and vehicles
         state.status = self.calculateNextStatus(state)
@@ -111,15 +111,21 @@ class StateSpace:
         for i in range(len(list1)):
             state.vehicles.append(list1[i][0])
             
-        for vehicle in state.vehicles:
-            vehicle.position += vehicle.velocity * dt * math.cos(math.radians(vehicle.orientation) / (math.pi / 2) * 90)
-        
-        i = 0
-        while i < 2:
-            waypoint_vehicle, index = CommonroadEnv(scenario, planning_problem_set).get_current_vehicle_waypoint(vehicle)
-            state.vehicles.position = waypoint_vehicle.position
-            state.vehicles.orientation = waypoint_vehicle.orientation
-            i = i + 1
+        if len(state.vehicles) != 0:
+            for vehicle in state.vehicles:
+                vehicle.position += vehicle.velocity * dt * math.cos(math.radians(vehicle.orientation) / (math.pi / 2) * 90)
+
+            if len(state.vehicles) > 1:
+                i = 0
+                while i < 2:
+                    waypoint_vehicle, index = CommonroadEnv(scenario, planning_problem_set).get_current_vehicle_waypoint(state.vehicles[i])
+                    state.vehicles[i].position = waypoint_vehicle.position
+                    state.vehicles[i].orientation = waypoint_vehicle.orientation
+                    i = i + 1
+            else:
+                waypoint_vehicle, index = CommonroadEnv(scenario, planning_problem_set).get_current_vehicle_waypoint(state.vehicles[0])
+                state.vehicles[0].position = waypoint_vehicle.position
+                state.vehicles[0].orientation = waypoint_vehicle.orientation
             
         return state.vehicles
     
@@ -191,13 +197,10 @@ class StateSpace:
 
         return speed_reward + action_reward
 
-"""
-MCTS
-"""
 
 def randomPolicy(state):
     accum_reward = 0
-    for i in range(6):
+    for i in range(10):
         if not state.isTerminal():
             action = random.choice(state.getPossibleActions())
             state = state.takeAction(action)
@@ -330,7 +333,7 @@ class CommonroadEnv():
         self.action = 0
         self.ego_initial_state = self.generate_ego_initial_state()
         self.vehicles_initial_state = self.generate_vehicles_initial_state()
-        self.trajectory_state_list = [State(position = self.ego_initial_state.position, orientation = self.ego_initial_state.orientation, time_step = self.time_step)]
+        self.trajectory_state_list = [State(position = self.ego_initial_state.position, velocity = self.ego_initial_state.velocity, orientation = self.ego_initial_state.orientation, time_step = self.time_step)]
         
         
     def generate_ego_initial_state(self):
@@ -372,15 +375,18 @@ class CommonroadEnv():
         
         return waypoints_ego
     
-    def generate_waypoints_vehicle(self, vehicle: Obstacle) -> dict:
-        # generate waypoints from vehicles
-        state_vehicle = State(position=vehicle.initial_state.position, 
-                              velocity=vehicle.initial_state.velocity, 
-                              orientation=vehicle.initial_state.orientation,
-                              yaw_rate=0,
-                              slip_angle=0,
-                              time_step=0)
-
+    def generate_waypoints_vehicle(self, vehicle: VehicleState) -> dict:
+        # generate waypoints from one vehicle 
+        for obstacle in self.scenario.dynamic_obstacles:
+            if obstacle.obstacle_id == vehicle.ID:
+                state_vehicle = State(position=obstacle.initial_state.position, 
+                                      velocity=obstacle.initial_state.velocity, 
+                                      orientation=obstacle.initial_state.orientation,
+                                      yaw_rate=0,
+                                      slip_angle=0,
+                                      time_step=0)
+                break
+                
         planning_problem_vehicle = PlanningProblem(planning_problem_id=list(self.planning_problem_set.planning_problem_dict.values())[0].planning_problem_id, 
                                                    initial_state=state_vehicle, 
                                                    goal_region=GoalRegion(state_list=[State(time_step=Interval(start=99,end=100))]))
@@ -416,7 +422,7 @@ class CommonroadEnv():
         waypoints = DataHandler().choose_vehicle_route(waypoints)
         distance = []
         for i in range(len(waypoints)):
-            d = np.linalg.norm(ego.position - waypoints[i].position) 
+            d = np.linalg.norm(vehicle.position - waypoints[i].position) 
             distance.append(d)
 
         return waypoints[distance.index(min(distance))], distance.index(min(distance))
@@ -471,7 +477,8 @@ class CommonroadEnv():
             vehicle.orientation = self.get_obstacle_state_at_time()['dynamic'][vehicle.ID].orientation
             vehicle.velocity = self.get_obstacle_state_at_time()['dynamic'][vehicle.ID].velocity
         
-        
+        new_ego_state = State(position = self.state.ego.position, velocity = self.state.ego.velocity, orientation = self.state.ego.orientation, time_step = self.time_step)
+        self.trajectory_state_list.append(new_ego_state)
         self.done = self.is_done()
         self.reward = self.get_reward()
             
@@ -483,19 +490,24 @@ class CommonroadEnv():
         self.done = False
         self.state.ego = deepcopy(self.ego_initial_state)
         self.state.vehicles = deepcopy(self.vehicles_initial_state)
-        self.trajectory_state_list = [State(position = self.ego_initial_state.position, orientation = self.ego_initial_state.orientation, time_step = self.time_step)]
+        self.trajectory_state_list = [State(position = self.ego_initial_state.position, velocity = self.ego_initial_state.velocity, orientation = self.ego_initial_state.orientation, time_step = self.time_step)]
         
         return self.state
         
     def get_reward(self):
         # if collision, reward -2000-v^2; if success, reward 1000
         if self.done:
-            self.reward = -2000 - self.state.ego.velocity ** 2 if self.is_collided() else 1000
+            if self.is_collided():
+                self.reward = -2000 - self.state.ego.velocity ** 2
+            elif self.time_run_out():
+                self.reward = -500
+            else:
+                self.reward = 1000
             return self.reward
-        # speed reward: 0 reward when 8.33 ~ 11.11 m/s(30 ~ 40 km/h); out of the range negative reward
+        # speed reward: 0 reward when 11.11 ~ 16.67 m/s(40 ~ 60 km/h); out of the range negative reward
         
-        speed_reward = 1.0 * (self.state.ego.velocity - 8.33) if self.state.ego.velocity < 8.33 else (
-            0 if self.state.ego.velocity < 11.11 else 4 * (11.11 - self.state.ego.velocity))
+        speed_reward = 1.0 * (self.state.ego.velocity - 11.11) if self.state.ego.velocity < 11.11 else (
+            0 if self.state.ego.velocity < 16.67 else 4 * (16.67 - self.state.ego.velocity))
         # action reward
         action_reward = -0.1 if self.action != 0 else 0
 
@@ -503,16 +515,13 @@ class CommonroadEnv():
         return self.reward
     
     def is_done(self):
-        return self.is_reached() or self.is_collided()
+        return self.is_reached() or self.is_collided() or self.time_run_out()
     
     def is_reached(self):
         return self.ego_initial_state.goal.is_reached(self.state.ego)
     
     def is_collided(self):
-        cc = create_collision_checker(scenario)
-
-        new_ego_state = State(position = self.state.ego.position, orientation = self.state.ego.orientation, time_step = self.time_step)
-        self.trajectory_state_list.append(new_ego_state)    
+        cc = create_collision_checker(scenario) 
         ego_trajectory = Trajectory(0, self.trajectory_state_list)
         
         # create a TrajectoryPrediction object consisting of the trajectory and the shape of the ego vehicle
@@ -528,6 +537,10 @@ class CommonroadEnv():
         plt.show()
         """
         return cc.collide(co)
+    
+    def time_run_out(self):
+        if self.time_step > 100:
+            return True
         
     def get_obstacle_state_at_time(self):
         # Returns a dictionary containing static and dynamic obstacles
@@ -581,7 +594,7 @@ if __name__ == "__main__":
     scores = []
     average_scores = []
     scores_window = deque(maxlen=10)
-    actions = [-5, -2.5, -1.5, 0.0, 1.5, 2.5]
+    actions = [-6, -2.5, -1.5, 0.0, 1.5, 2.5]
 
     # run episode
     for episode in episodes:
@@ -610,8 +623,3 @@ if __name__ == "__main__":
     plt.ylabel('score')
     plt.xlabel('Episode')
     plt.show()
-
-
-
-
-

@@ -4,7 +4,6 @@ __version__ = "2022.3"
 __maintainer__ = "Chi Zhang"
 __email__ = "ge96vij@mytum.de"
 
-
 import os
 import matplotlib.pyplot as plt
 plt.rcParams.update({'figure.max_open_warning': 0})
@@ -20,13 +19,14 @@ from commonroad_route_planner.route_planner import RoutePlanner
 from commonroad.common.util import Interval
 
 # generate path of the file to be read
-path_file = os.path.abspath('scenarios/exercise/DEU_Flensburg-2_1_T-1.xml')
+path_file = os.path.abspath('scenarios/exercise/DEU_Flensburg-11_1_T-1.xml')
 
 # read in the scenario and planning problem set
 scenario, planning_problem_set = CommonRoadFileReader(path_file).open()
 
 
 from copy import deepcopy
+from datetime import datetime
 from scipy.spatial import distance
 from shapely.geometry import Polygon
 import numpy as np
@@ -39,6 +39,7 @@ from commonroad.planning.goal import GoalRegion
 from commonroad.planning.planning_problem import PlanningProblem
 from commonroad.scenario.trajectory import State, Trajectory
 from commonroad.scenario.obstacle import Obstacle
+from SMP.motion_planner.utility import visualize_solution
 
 class EgoState:
     def __init__(self, velocity=0, position=np.array([0.0, 0.0]), orientation=0, time_step=0, shape=Rectangle(length=4.3, width=1.8), goal=None):
@@ -106,10 +107,10 @@ class StateSpace:
     def calculateNextVehicleState(self, state, dt):
         # Vehicles is a list of instances
         # Predict the state of vehicles
-        list1 = DataHandler().sort_vehicle(state.ego, state.vehicles)
+        sorted_vehicles = DataHandler().sort_vehicle(state.ego, state.vehicles)
         state.vehicles = []
-        for i in range(len(list1)):
-            state.vehicles.append(list1[i][0])
+        for i in range(len(sorted_vehicles)):
+            state.vehicles.append(sorted_vehicles[i][0])
             
         if len(state.vehicles) != 0:
             for vehicle in state.vehicles:
@@ -200,7 +201,7 @@ class StateSpace:
 
 def randomPolicy(state):
     accum_reward = 0
-    for i in range(10):
+    for i in range(12):
         if not state.isTerminal():
             action = random.choice(state.getPossibleActions())
             state = state.takeAction(action)
@@ -327,6 +328,7 @@ class CommonroadEnv():
         self.planning_problem_set = planning_problem_set
         self.state = StateSpace()
         self.time_step = 0
+        self.episode = -1
         self.dt = 0.1
         self.reward = 0
         self.done = False
@@ -334,7 +336,18 @@ class CommonroadEnv():
         self.ego_initial_state = self.generate_ego_initial_state()
         self.vehicles_initial_state = self.generate_vehicles_initial_state()
         self.trajectory_state_list = [State(position = self.ego_initial_state.position, velocity = self.ego_initial_state.velocity, orientation = self.ego_initial_state.orientation, time_step = self.time_step)]
+        self.df_ego = pd.DataFrame(columns=['time_step', 'velocity', 'position', 'orientation', 'action', 'reward'])
         
+        
+    def generate_df(self, df):
+        df = df.append(pd.Series({'time_step': self.time_step, 
+                                  'velocity':self.state.ego.velocity, 
+                                  'position': self.state.ego.position, 
+                                  'orientation': self.state.ego.orientation, 
+                                  'action': self.action,
+                                  'reward': self.reward}, name = self.episode))
+
+        return df
         
     def generate_ego_initial_state(self):
         for key in self.planning_problem_set.planning_problem_dict.keys():
@@ -481,6 +494,7 @@ class CommonroadEnv():
         self.trajectory_state_list.append(new_ego_state)
         self.done = self.is_done()
         self.reward = self.get_reward()
+        self.df_ego = self.generate_df(self.df_ego)
             
         return self.state, self.reward, self.done
     
@@ -491,6 +505,8 @@ class CommonroadEnv():
         self.state.ego = deepcopy(self.ego_initial_state)
         self.state.vehicles = deepcopy(self.vehicles_initial_state)
         self.trajectory_state_list = [State(position = self.ego_initial_state.position, velocity = self.ego_initial_state.velocity, orientation = self.ego_initial_state.orientation, time_step = self.time_step)]
+        self.episode += 1
+        self.df_ego = self.generate_df(self.df_ego)
         
         return self.state
         
@@ -539,7 +555,7 @@ class CommonroadEnv():
         return cc.collide(co)
     
     def time_run_out(self):
-        if self.time_step > 100:
+        if self.time_step > 99:
             return True
         
     def get_obstacle_state_at_time(self):
@@ -559,7 +575,10 @@ class CommonroadEnv():
             obstacle_states['static'][obstacle.obstacle_id] = obstacle.initial_state
 
         return obstacle_states
-
+    
+    def visualization(self):
+        return visualize_solution(self.scenario, self.planning_problem_set, Trajectory(0, self.trajectory_state_list))
+        
 
 class DataHandler():
     def __init__(self, number_vehicle_to_handle=5, method_sort_vehicle='nearst_vehicle', method_choose_route='random'):
@@ -573,12 +592,20 @@ class DataHandler():
             considered_vehicles = [[vehicle, distance.euclidean(ego.position, vehicle.position)] for vehicle in vehicles 
                                    if distance.euclidean(ego.position, vehicle.position) < 30]
             considered_vehicles = sorted(considered_vehicles, key=(lambda x: x[1]))[0:self.number_vehicle_to_handle]
-            
             return considered_vehicles
     
     def choose_vehicle_route(self, route_waypoint):
         if self.method_choose_route == 'random':
-            return route_waypoint[random.randint(0,len(route_waypoint) - 1)]
+            return route_waypoint[random.randint(0, len(route_waypoint) - 1)]
+        
+        elif self.method_choose_route == 'sample-based':
+            # needs to be modified
+            epsilon = 0.92
+            p = np.ones(len(route_waypoint)) * epsilon / len(route_waypoint)
+            reward = np.zeros(len(route_waypoint))
+            worst_route = np.argmax(reward)
+            p[worst_route] = 1 - epsilon + (epsilon / len(route_waypoint))
+            return route_waypoint[np.random.choice(np.arange(len(route_waypoint)), p=p)]
 
 
 import numpy as np
@@ -590,29 +617,30 @@ if __name__ == "__main__":
 
     env = CommonroadEnv(scenario, planning_problem_set)
     env.start()
-    episodes = [i for i in range(1)]
+    episodes = [i for i in range(20)]
     scores = []
     average_scores = []
-    scores_window = deque(maxlen=10)
+    scores_window = deque(maxlen=1)
     actions = [-6, -2.5, -1.5, 0.0, 1.5, 2.5]
 
     # run episode
     for episode in episodes:
         score = 0
         state = env.reset()
-        searcher = mcts(iterationLimit=10)
+        searcher = mcts(iterationLimit=15)
 
         while True:
             mcts_state = state
             action = searcher.search(initialState=mcts_state)
             state, reward, done = env.step(action)
-            print(reward, env.is_collided(), env.state.ego.velocity)
+            print(reward, env.is_collided(), env.state.ego.velocity, env.time_step)
             score += reward
             
             if done:
                 scores.append(score)
                 average_scores.append(sum(scores) / (episode + 1))
                 print("episode: {}, score: {:.2f}".format(episode, score))
+                env.visualization()
                 break
             
     fig = plt.figure()
@@ -623,3 +651,15 @@ if __name__ == "__main__":
     plt.ylabel('score')
     plt.xlabel('Episode')
     plt.show()
+
+    # generate png
+    dir_path_png = os.path.join(os.getcwd(), 'score')
+    if not os.path.isdir(dir_path_png):
+        os.makedirs(dir_path_png)
+    plt.savefig(dir_path_png + '/' + str(datetime.now().strftime('%Y_%m_%d_%H_%M_%S')) + '.png')
+
+    # generate csv
+    dir_path_csv = os.path.join(os.getcwd(), 'csv')
+    if not os.path.isdir(dir_path_csv):
+        os.makedirs(dir_path_csv)
+    env.df_ego.to_csv(dir_path_csv + '/' + str(datetime.now().strftime('%Y_%m_%d_%H_%M_%S')) + '.csv', index = True, sep = ' ', float_format='%.4f')

@@ -4,6 +4,7 @@ __version__ = "2022.3"
 __maintainer__ = "Chi Zhang"
 __email__ = "ge96vij@mytum.de"
 
+
 import os
 import matplotlib.pyplot as plt
 plt.rcParams.update({'figure.max_open_warning': 0})
@@ -42,13 +43,14 @@ from commonroad.scenario.obstacle import Obstacle
 from SMP.motion_planner.utility import visualize_solution
 
 class EgoState:
-    def __init__(self, velocity=0, position=np.array([0.0, 0.0]), orientation=0, time_step=0, shape=Rectangle(length=4.3, width=1.8), goal=None):
+    def __init__(self, velocity=0, position=np.array([0.0, 0.0]), orientation=0, time_step=0, shape=Rectangle(length=4.3, width=1.8), goal=None, trajectory=None):
         self.velocity = velocity
         self.position = position
         self.orientation = orientation # The orientation is in radians, converted into an angle as "redians * 180 / Pi"
         self.time_step = time_step
         self.shape = shape
         self.goal = goal
+        self.trajectory = trajectory
 
         
 class VehicleState:
@@ -102,6 +104,9 @@ class StateSpace:
         state.ego.orientation = waypoint_ego.orientation
         state.ego.velocity += action * dt
         
+        new_ego_state = State(position=state.ego.position, velocity=state.ego.velocity, orientation=state.ego.orientation, time_step =state.ego.time_step)
+        state.ego.trajectory.append(new_ego_state)
+        
         return state.ego
     
     def calculateNextVehicleState(self, state, dt):
@@ -153,7 +158,7 @@ class StateSpace:
         
         """
         2. Calculate the shapely polygon, check if polygon areas overlap
-        """
+        
         vehicle_points = np.array([[state.ego.shape.length / 2, state.ego.shape.width / 2],
                                   [state.ego.shape.length / 2, -state.ego.shape.width / 2],
                                   [-state.ego.shape.length / 2, -state.ego.shape.width / 2],
@@ -169,7 +174,15 @@ class StateSpace:
             if polygon_ego.intersects(polygon_vehicle):
                 state.status.is_collided = True
                 break
-                
+        """
+        cc = create_collision_checker(scenario) 
+        ego_trajectory = Trajectory(0, state.ego.trajectory)
+        
+        # create a TrajectoryPrediction object consisting of the trajectory and the shape of the ego vehicle
+        traj_pred = TrajectoryPrediction(trajectory=ego_trajectory, shape=state.ego.shape)
+        co = create_collision_object(traj_pred)
+        state.status.is_collided = cc.collide(co)
+        
         return state.status
     
     def getPolygon(self, vehicle_points, x_tra, y_tra, orientation):
@@ -190,9 +203,9 @@ class StateSpace:
         # if collision, reward -2000-v^2; if success, reward 1000
         if self.isTerminal():
             return -2000 - ego_speed ** 2 if self.status.is_collided else 1000
-        # speed reward: 0 reward when 8.33 ~ 11.11 m/s(30 ~ 40 km/h); out of the range negative reward
+        # speed reward: 0 reward when 8.33 ~ 16.67 m/s(30 ~ 60 km/h); out of the range negative reward
         speed_reward = 1.0 * (ego_speed - 8.33) if ego_speed < 8.33 else (
-            0 if ego_speed < 11.11 else 4 * (11.11 - ego_speed))
+            0 if ego_speed < 16.67 else 4 * (16.67 - ego_speed))
         # action reward
         action_reward = -0.1 if action != 0 else 0
 
@@ -201,11 +214,12 @@ class StateSpace:
 
 def randomPolicy(state):
     accum_reward = 0
-    for i in range(12):
+    for i in range(10):
         if not state.isTerminal():
             action = random.choice(state.getPossibleActions())
             state = state.takeAction(action)
             accum_reward += state.getReward(action)
+            print(state.getReward(action), accum_reward)
         else:
             return state.getReward()+accum_reward
     return accum_reward
@@ -230,7 +244,7 @@ class treeNode():
 
 
 class mcts():
-    def __init__(self, timeLimit=None, iterationLimit=None, explorationConstant=1 / math.sqrt(2),
+    def __init__(self, timeLimit=None, iterationLimit=None, explorationConstant=2,
                  rolloutPolicy=randomPolicy):
         if timeLimit != None:
             if iterationLimit != None:
@@ -253,6 +267,7 @@ class mcts():
         self.root = treeNode(initialState, None)
 
         if self.limitType == 'time':
+            # t1 = time.time()
             timeLimit = time.time() + self.timeLimit / 1000
             while time.time() < timeLimit:
                 self.executeRound()
@@ -262,9 +277,11 @@ class mcts():
 
         bestChild = self.getBestChild(self.root, 0)
         action = (action for action, node in self.root.children.items() if node is bestChild).__next__()
+        # t2 = time.time()
         if needDetails:
             return {"action": action, "expectedReward": bestChild.totalReward / bestChild.numVisits}
         else:
+            print('RunTime:%s ms'%((t2-t1)*1000))
             return action
 
     def executeRound(self):
@@ -280,6 +297,7 @@ class mcts():
             if node.isFullyExpanded:
                 node = self.getBestChild(node, self.explorationConstant)
             else:
+                # print(node, node.children)
                 return self.expand(node)
         return node
 
@@ -289,6 +307,7 @@ class mcts():
             if action not in node.children:
                 newNode = treeNode(node.state.takeAction(action), node)
                 node.children[action] = newNode
+                print(node, node.children)
                 if len(actions) == len(node.children):
                     node.isFullyExpanded = True
                 return newNode
@@ -312,6 +331,7 @@ class mcts():
                 bestNodes = [child]
             elif nodeValue == bestValue:
                 bestNodes.append(child)
+        # print(bestNodes)
         return random.choice(bestNodes)
 
 
@@ -335,7 +355,7 @@ class CommonroadEnv():
         self.action = 0
         self.ego_initial_state = self.generate_ego_initial_state()
         self.vehicles_initial_state = self.generate_vehicles_initial_state()
-        self.trajectory_state_list = [State(position = self.ego_initial_state.position, velocity = self.ego_initial_state.velocity, orientation = self.ego_initial_state.orientation, time_step = self.time_step)]
+        # self.trajectory_state_list = [State(position = self.ego_initial_state.position, velocity = self.ego_initial_state.velocity, orientation = self.ego_initial_state.orientation, time_step = self.time_step)]
         self.df_ego = pd.DataFrame(columns=['time_step', 'velocity', 'position', 'orientation', 'action', 'reward'])
         
         
@@ -352,11 +372,12 @@ class CommonroadEnv():
     def generate_ego_initial_state(self):
         for key in self.planning_problem_set.planning_problem_dict.keys():
             # self.goal = planning_problem_set.planning_problem_dict[key].goal
-            ego_initial_state = EgoState(velocity = self.planning_problem_set.planning_problem_dict[key].initial_state.velocity,
-                                         position = self.planning_problem_set.planning_problem_dict[key].initial_state.position, 
-                                         orientation = self.planning_problem_set.planning_problem_dict[key].initial_state.orientation, 
-                                         time_step = self.planning_problem_set.planning_problem_dict[key].initial_state.time_step,
-                                         goal = self.planning_problem_set.planning_problem_dict[key].goal)
+            ego_initial_state = EgoState(velocity=self.planning_problem_set.planning_problem_dict[key].initial_state.velocity,
+                                         position=self.planning_problem_set.planning_problem_dict[key].initial_state.position, 
+                                         orientation=self.planning_problem_set.planning_problem_dict[key].initial_state.orientation, 
+                                         time_step=self.planning_problem_set.planning_problem_dict[key].initial_state.time_step,
+                                         goal=self.planning_problem_set.planning_problem_dict[key].goal,
+                                         trajectory=[State(position=self.planning_problem_set.planning_problem_dict[key].initial_state.position, velocity=self.planning_problem_set.planning_problem_dict[key].initial_state.velocity, orientation=self.planning_problem_set.planning_problem_dict[key].initial_state.orientation, time_step=self.planning_problem_set.planning_problem_dict[key].initial_state.time_step)])
             
         return ego_initial_state
     
@@ -491,7 +512,7 @@ class CommonroadEnv():
             vehicle.velocity = self.get_obstacle_state_at_time()['dynamic'][vehicle.ID].velocity
         
         new_ego_state = State(position = self.state.ego.position, velocity = self.state.ego.velocity, orientation = self.state.ego.orientation, time_step = self.time_step)
-        self.trajectory_state_list.append(new_ego_state)
+        self.state.ego.trajectory.append(new_ego_state)
         self.done = self.is_done()
         self.reward = self.get_reward()
         self.df_ego = self.generate_df(self.df_ego)
@@ -500,11 +521,12 @@ class CommonroadEnv():
     
     def reset(self):
         self.time_step = 0
+        self.action = 0
         self.reward = 0
         self.done = False
         self.state.ego = deepcopy(self.ego_initial_state)
         self.state.vehicles = deepcopy(self.vehicles_initial_state)
-        self.trajectory_state_list = [State(position = self.ego_initial_state.position, velocity = self.ego_initial_state.velocity, orientation = self.ego_initial_state.orientation, time_step = self.time_step)]
+        self.state.ego.trajectory = [State(position = self.ego_initial_state.position, velocity = self.ego_initial_state.velocity, orientation = self.ego_initial_state.orientation, time_step = self.time_step)]
         self.episode += 1
         self.df_ego = self.generate_df(self.df_ego)
         
@@ -520,9 +542,9 @@ class CommonroadEnv():
             else:
                 self.reward = 1000
             return self.reward
-        # speed reward: 0 reward when 11.11 ~ 16.67 m/s(40 ~ 60 km/h); out of the range negative reward
+        # speed reward: 0 reward when 8.33 ~ 16.67 m/s(30 ~ 60 km/h); out of the range negative reward
         
-        speed_reward = 1.0 * (self.state.ego.velocity - 11.11) if self.state.ego.velocity < 11.11 else (
+        speed_reward = 1.0 * (self.state.ego.velocity - 8.33) if self.state.ego.velocity < 8.33 else (
             0 if self.state.ego.velocity < 16.67 else 4 * (16.67 - self.state.ego.velocity))
         # action reward
         action_reward = -0.1 if self.action != 0 else 0
@@ -538,7 +560,7 @@ class CommonroadEnv():
     
     def is_collided(self):
         cc = create_collision_checker(scenario) 
-        ego_trajectory = Trajectory(0, self.trajectory_state_list)
+        ego_trajectory = Trajectory(0, self.state.ego.trajectory)
         
         # create a TrajectoryPrediction object consisting of the trajectory and the shape of the ego vehicle
         traj_pred = TrajectoryPrediction(trajectory=ego_trajectory, shape=self.state.ego.shape)
@@ -577,8 +599,8 @@ class CommonroadEnv():
         return obstacle_states
     
     def visualization(self):
-        return visualize_solution(self.scenario, self.planning_problem_set, Trajectory(0, self.trajectory_state_list))
-        
+        return visualize_solution(self.scenario, self.planning_problem_set, Trajectory(0, self.state.ego.trajectory))
+
 
 class DataHandler():
     def __init__(self, number_vehicle_to_handle=5, method_sort_vehicle='nearst_vehicle', method_choose_route='random'):
@@ -617,7 +639,7 @@ if __name__ == "__main__":
 
     env = CommonroadEnv(scenario, planning_problem_set)
     env.start()
-    episodes = [i for i in range(20)]
+    episodes = [i for i in range(1)]
     scores = []
     average_scores = []
     scores_window = deque(maxlen=1)
@@ -627,7 +649,7 @@ if __name__ == "__main__":
     for episode in episodes:
         score = 0
         state = env.reset()
-        searcher = mcts(iterationLimit=15)
+        searcher = mcts(iterationLimit=30)
 
         while True:
             mcts_state = state
@@ -640,7 +662,7 @@ if __name__ == "__main__":
                 scores.append(score)
                 average_scores.append(sum(scores) / (episode + 1))
                 print("episode: {}, score: {:.2f}".format(episode, score))
-                env.visualization()
+                # env.visualization()
                 break
             
     fig = plt.figure()

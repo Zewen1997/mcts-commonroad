@@ -1,7 +1,8 @@
-#!/usr/bin/env python
-# coding: utf-8
-
-# In[1]:
+__author__ = "Zewen Chen"
+__copyright__ = "TUM Chair of Robotics, Artificial Intelligence and Real-time Systems"
+__version__ = "2022.4"
+__maintainer__ = "Chi Zhang"
+__email__ = "ge96vij@mytum.de"
 
 
 import os
@@ -46,9 +47,8 @@ from commonroad.scenario.obstacle import Obstacle, StaticObstacle, ObstacleType
 from SMP.motion_planner.utility import visualize_solution
 
 
-# ## preprocessing
+# preprocessing
 
-# In[2]:
 
 
 class Waypoint():
@@ -57,9 +57,6 @@ class Waypoint():
         self.orientation = orientation
         self.path_length = path_length
         self.curvature = curvature
-
-
-# In[3]:
 
 
 def generate_waypoints_ego() -> list:
@@ -148,9 +145,6 @@ def get_vehicle_initial_path(waypoints_vehicles):
     return _distance
 
 
-# In[5]:
-
-
 list_s_v = {}
 for obstacle in scenario.dynamic_obstacles:
     length = {}
@@ -160,9 +154,6 @@ for obstacle in scenario.dynamic_obstacles:
             _length.append(y.path_length)
         length[x] = _length
     list_s_v[obstacle.obstacle_id] = length
-
-
-# In[6]:
 
 
 dic = get_vehicle_initial_path(_waypoints_vehicles)
@@ -177,8 +168,6 @@ for i in range((len(_waypoints_ego))):
 virtual_obstacle = StaticObstacle(0, ObstacleType.CAR, Rectangle(3, 1.5, np.array([0, 0])), State(position=_waypoints_ego[_distance.index(min(_distance))].position, orientation=_waypoints_ego[_distance.index(min(_distance))].orientation, time_step=0, velocity=0))
 scenario.add_objects(virtual_obstacle, list(planning_problem.goal.lanelets_of_goal_position.values())[0][0])
 
-
-# In[16]:
 
 
 class EgoState:
@@ -864,318 +853,79 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from collections import deque
 
-
-env = CommonroadEnv(scenario, planning_problem_set)
-env.start()
-episodes = [i for i in range(1)]
-scores = []
-average_scores = []
-normalized_score = [0.0000001]
-scores_window = deque(maxlen=1)
-actions = [-4, -2, 0.0, 2]
-strategyset = [0.001, 1, 1000]
-exp3 = Exp3(0.5, len(strategyset))
-df_evaluation = pd.DataFrame(columns=['success_rate', 'steps', 'collision_speed', 'score', 'runtime'])
-
-
-# run episode
-for episode in episodes:
-    score = 0
-    state = env.reset()
-    index = exp3.select_arm()
-    searcher = mcts(iterationLimit=70, explorationConstant=strategyset[index])
-    t1 = time.time()
-    while True:
-        mcts_state = state
-        action = searcher.search(initialState=mcts_state)
-        state, reward, done = env.step(action)
-        print(reward, env.is_collided(), env.state.ego.velocity, env.state.ego.time_step)
-        score += reward
-
-        if done:
-            t2 = time.time()
-            normalized_score.append(score)
-            exp3.update(index, (score - min(normalized_score)) / (max(normalized_score) - min(normalized_score)))
-            
-            if env.is_reached():
-                success = 1
-            else:
-                success = 0
-            df_evaluation = df_evaluation.append(pd.Series({'success_rate': success, 
-                          'steps':env.state.ego.time_step, 
-                          'collision_speed': state.ego.velocity if env.is_collided() else np.nan, 
-                          'score': score, 
-                          'runtime': t2 - t1}, name = episode))
-            scores.append(score)
-            average_scores.append(sum(scores) / (episode + 1))
-            print("episode: {}, score: {:.2f}".format(episode, score))
-            # env.visualization()
-            break
-
-
-fig = plt.figure()
-ax = fig.add_subplot(111)
-ax.plot(np.arange(len(scores)), scores, label = 'score')
-ax.plot(np.arange(len(scores)), average_scores, label = 'average score')
-ax.legend()
-plt.ylabel('score')
-plt.xlabel('Episode')
-
-# generate png
-dir_path_png = os.path.join(os.getcwd(), 'score')
-if not os.path.isdir(dir_path_png):
-    os.makedirs(dir_path_png)
-plt.savefig(dir_path_png + '/' + str(datetime.now().strftime('%Y_%m_%d_%H_%M_%S')) + '.png')
-plt.show()
-
-# generate csv for ego information
-dir_path_csv = os.path.join(os.getcwd(), 'csv_ego')
-if not os.path.isdir(dir_path_csv):
-    os.makedirs(dir_path_csv)
-env.df_ego.to_csv(dir_path_csv + '/' + str(datetime.now().strftime('%Y_%m_%d_%H_%M_%S')) + '.csv', index = True, sep = ' ', float_format='%.4f')
-
-# generate csv for evaluation
-dir_path_csv = os.path.join(os.getcwd(), 'csv_eva')
-if not os.path.isdir(dir_path_csv):
-    os.makedirs(dir_path_csv)
-df_evaluation.to_csv(dir_path_csv + '/' + str(datetime.now().strftime('%Y_%m_%d_%H_%M_%S')) + '.csv', index = True, sep = ' ', float_format='%.4f')
-
-
-# In[9]:
-
-
-normalized_score
-
-
-# In[10]:
-
-
-exp3.weights
-
-
-# In[11]:
-
-
-df_evaluation
-
-
-# In[14]:
-
-
-env.df_ego
-
-
-# In[13]:
-
-
-env.visualization()
-
-
-# In[13]:
-
-
-sorted_vehicles = DataHandler().sort_vehicle(state.ego, state.vehicles)
-state.vehicles = []
-for i in range(len(sorted_vehicles)):
-    state.vehicles.append(sorted_vehicles[i][0]) 
-
-
-# In[14]:
-
-
-sorted_vehicles = DataHandler().sort_vehicle(state.ego, state.vehicles)
-sorted_vehicles
-
-
-# In[22]:
-
-
-def getPolygon(vehicle_points, x_tra, y_tra, orientation):
-    xy_list_rot_tra = []
-    for i, vehicle_points in enumerate(vehicle_points):
-        x_rot = vehicle_points[0] * math.cos(math.radians(orientation / (math.pi / 2) * 90)) - vehicle_points[1] * math.sin(math.radians(orientation / (math.pi / 2) * 90))
-        y_rot = vehicle_points[0] * math.sin(math.radians(orientation / (math.pi / 2) * 90)) + vehicle_points[1] * math.cos(math.radians(orientation / (math.pi / 2) * 90))
-
-        xy_list_rot_tra.append((x_rot + x_tra, y_rot + y_tra))
-
-    return Polygon(xy_list_rot_tra)
-
-
-# In[23]:
-
-
-ego_points = np.array([[state.ego.shape.length / 2, state.ego.shape.width / 2],
-                       [state.ego.shape.length / 2, -state.ego.shape.width / 2],
-                       [-state.ego.shape.length / 2, -state.ego.shape.width / 2],
-                       [-state.ego.shape.length / 2, state.ego.shape.width / 2]])
-
-polygon_ego = getPolygon(ego_points, state.ego.position[0], state.ego.position[1], state.ego.orientation)
-polygon_vehicles = []
-for vehicle in state.vehicles:
-    vehicle_points = np.array([[vehicle.shape.length / 2, vehicle.shape.width / 2],
-                               [vehicle.shape.length / 2, -vehicle.shape.width / 2],
-                               [-vehicle.shape.length / 2, -vehicle.shape.width / 2],
-                               [-vehicle.shape.length / 2, vehicle.shape.width / 2]])
-    polygon_vehicle = getPolygon(vehicle_points, vehicle.position[0], vehicle.position[1], vehicle.orientation)
-    polygon_vehicles.append(polygon_vehicle)
-
-for polygon_vehicle in polygon_vehicles:
-    if polygon_ego.intersects(polygon_vehicle):
-        state.status.is_collided = True
-        break
-
-
-# In[162]:
-
-
-env.start()
-
-
-# In[163]:
-
-
-state = env.reset()
-
-
-# In[60]:
-
-
-circle_ego = state.getThreeCircle(state.ego.position[0], state.ego.position[1], state.ego.orientation, state.ego.shape.length, state.ego.shape.width)
-circle_ego
-
-
-# In[61]:
-
-
-circle_vehicles = []
-for vehicle in state.vehicles:
-    circle_vehicle = state.getThreeCircle(vehicle.position[0], vehicle.position[1], vehicle.orientation, vehicle.shape.length, vehicle.shape.width)
-    circle_vehicles.append(circle_vehicle)
-
-
-# In[64]:
-
-
-circle_vehicles[1]
-
-
-# In[134]:
-
-
-env.state.vehicles[-1].orientation
-
-
-# In[38]:
-
-
-poly = list(planning_problem_set.planning_problem_dict.values())[0].goal.state_list[0].position.shapes[0].vertices
-poly
-
-
-# In[39]:
-
-
-Polygon(poly)
-
-
-# ## Solution
-
-# In[14]:
-
-
-trajectory_solution = Trajectory(0, env.state.ego.trajectory)
-
-
-# In[15]:
-
-
-planning_problem = list(planning_problem_set.planning_problem_dict.values())[0]
-
-
-# In[16]:
-
-
-from commonroad.common.solution import Solution, PlanningProblemSolution,                                        VehicleModel, VehicleType, CostFunction
-
-# create PlanningProblemSolution object
-kwarg = {'planning_problem_id': planning_problem.planning_problem_id,
-         'vehicle_model':VehicleModel.KS,                            # used vehicle model, change if needed
-         'vehicle_type':VehicleType.FORD_ESCORT,                        # used vehicle type, change if needed
-         'cost_function':CostFunction.TR1,                           # cost funtion, DO NOT use JB1
-         'trajectory':trajectory_solution}
-
-planning_problem_solution = PlanningProblemSolution(**kwarg)
-
-# create Solution object
-kwarg = {'scenario_id':scenario.scenario_id,
-         'planning_problem_solutions':[planning_problem_solution]}
-
-solution = Solution(**kwarg)
-
-
-# In[17]:
-
-
-from commonroad_dc.feasibility.solution_checker import valid_solution, solved_all_problems, starts_at_correct_ts, goal_reached, obstacle_collision, boundary_collision, ego_collision, solution_feasible, _check_input_vector_feasibility, _check_trajectory_feasibility
-
-valid_solution(scenario, planning_problem_set, solution)
-
-
-# In[18]:
-
-
-valid = all([ solved_all_problems(planning_problem_set, solution), goal_reached(scenario, planning_problem_set, solution), starts_at_correct_ts(solution, planning_problem_set), not obstacle_collision(scenario, planning_problem_set, solution), not boundary_collision(scenario, planning_problem_set, solution), not ego_collision(scenario, planning_problem_set, solution) ])
-valid
-
-
-# In[19]:
-
-
-solution_feasible(solution, scenario.dt, planning_problem_set)
-
-
-# In[20]:
-
-
-from commonroad.common.solution import CommonRoadSolutionWriter
-
-dir_output = os.getcwd() + "/outputs/solutions/"
-
-# write solution to a CommonRoad XML file
-csw = CommonRoadSolutionWriter(solution)
-csw.write_to_file(output_path=dir_output, overwrite=True)
-
-
-# In[15]:
-
-
-for i in range(0, 20):
-    plt.figure(figsize=(10, 10))
-    renderer = MPRenderer()
-    # uncomment the following line to visualize with animation
-    clear_output(wait=True)
-    # plot the scenario for each time step
-    scenario.draw(renderer, draw_params={'time_begin': i})
-    # plot the planning problem set
-    planning_problem_set.draw(renderer)
-    renderer.render()
+if __name__ == "__main__":
+    
+    env = CommonroadEnv(scenario, planning_problem_set)
+    env.start()
+    episodes = [i for i in range(1)]
+    scores = []
+    average_scores = []
+    normalized_score = [0.0000001]
+    scores_window = deque(maxlen=1)
+    actions = [-4, -2, 0.0, 2]
+    strategyset = [0.001, 1, 1000]
+    exp3 = Exp3(0.5, len(strategyset))
+    df_evaluation = pd.DataFrame(columns=['success_rate', 'steps', 'collision_speed', 'score', 'runtime'])
+
+
+    # run episode
+    for episode in episodes:
+        score = 0
+        state = env.reset()
+        index = exp3.select_arm()
+        searcher = mcts(iterationLimit=70, explorationConstant=strategyset[index])
+        t1 = time.time()
+        while True:
+            mcts_state = state
+            action = searcher.search(initialState=mcts_state)
+            state, reward, done = env.step(action)
+            print(reward, env.is_collided(), env.state.ego.velocity, env.state.ego.time_step)
+            score += reward
+
+            if done:
+                t2 = time.time()
+                normalized_score.append(score)
+                exp3.update(index, (score - min(normalized_score)) / (max(normalized_score) - min(normalized_score)))
+                
+                if env.is_reached():
+                    success = 1
+                else:
+                    success = 0
+                df_evaluation = df_evaluation.append(pd.Series({'success_rate': success, 
+                            'steps':env.state.ego.time_step, 
+                            'collision_speed': state.ego.velocity if env.is_collided() else np.nan, 
+                            'score': score, 
+                            'runtime': t2 - t1}, name = episode))
+                scores.append(score)
+                average_scores.append(sum(scores) / (episode + 1))
+                print("episode: {}, score: {:.2f}".format(episode, score))
+                # env.visualization()
+                break
+
+
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.plot(np.arange(len(scores)), scores, label = 'score')
+    ax.plot(np.arange(len(scores)), average_scores, label = 'average score')
+    ax.legend()
+    plt.ylabel('score')
+    plt.xlabel('Episode')
+
+    # generate png
+    dir_path_png = os.path.join(os.getcwd(), 'score')
+    if not os.path.isdir(dir_path_png):
+        os.makedirs(dir_path_png)
+    plt.savefig(dir_path_png + '/' + str(datetime.now().strftime('%Y_%m_%d_%H_%M_%S')) + '.png')
     plt.show()
 
+    # generate csv for ego information
+    dir_path_csv = os.path.join(os.getcwd(), 'csv_ego')
+    if not os.path.isdir(dir_path_csv):
+        os.makedirs(dir_path_csv)
+    env.df_ego.to_csv(dir_path_csv + '/' + str(datetime.now().strftime('%Y_%m_%d_%H_%M_%S')) + '.csv', index = True, sep = ' ', float_format='%.4f')
 
-# In[41]:
-
-
-normalized_score = [0.0000001, -5000, 3000, -6400, -5300]
-
-
-# In[42]:
-
-
-(-5300 - min(normalized_score)) / (max(normalized_score) - min(normalized_score))
-
-
-# In[ ]:
-
-
-
-
+    # generate csv for evaluation
+    dir_path_csv = os.path.join(os.getcwd(), 'csv_eva')
+    if not os.path.isdir(dir_path_csv):
+        os.makedirs(dir_path_csv)
+    df_evaluation.to_csv(dir_path_csv + '/' + str(datetime.now().strftime('%Y_%m_%d_%H_%M_%S')) + '.csv', index = True, sep = ' ', float_format='%.4f')

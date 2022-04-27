@@ -45,9 +45,8 @@ from commonroad.planning.planning_problem import PlanningProblem
 from commonroad.scenario.trajectory import State, Trajectory
 from commonroad.scenario.obstacle import Obstacle, StaticObstacle, ObstacleType
 from SMP.motion_planner.utility import visualize_solution
-
-
-# preprocessing
+from commonroad.common.solution import Solution, PlanningProblemSolution, VehicleModel, VehicleType, CostFunction
+from commonroad.common.solution import CommonRoadSolutionWriter
 
 
 
@@ -57,6 +56,7 @@ class Waypoint():
         self.orientation = orientation
         self.path_length = path_length
         self.curvature = curvature
+
 
 
 def generate_waypoints_ego() -> list:
@@ -127,8 +127,6 @@ list_s = list_s[i:]
 _waypoints_ego = _waypoints_ego[i:]
 
 
-# In[4]:
-
 
 def get_vehicle_initial_path(waypoints_vehicles):
     _distance = {}
@@ -145,6 +143,7 @@ def get_vehicle_initial_path(waypoints_vehicles):
     return _distance
 
 
+
 list_s_v = {}
 for obstacle in scenario.dynamic_obstacles:
     length = {}
@@ -154,6 +153,7 @@ for obstacle in scenario.dynamic_obstacles:
             _length.append(y.path_length)
         length[x] = _length
     list_s_v[obstacle.obstacle_id] = length
+
 
 
 dic = get_vehicle_initial_path(_waypoints_vehicles)
@@ -171,7 +171,7 @@ scenario.add_objects(virtual_obstacle, list(planning_problem.goal.lanelets_of_go
 
 
 class EgoState:
-    def __init__(self, velocity=0, position=np.array([0.0, 0.0]), orientation=0, time_step=0, shape=Rectangle(length=4.3, width=1.8), goal=None, trajectory=None, path_length=initial_ego_path_length):
+    def __init__(self, velocity=0, position=np.array([0.0, 0.0]), orientation=0, time_step=0, shape=Rectangle(length=4.3, width=1.8), goal=None, trajectory=None, path_length=initial_ego_path_length, steering_angle=0):
         self.velocity = velocity
         self.position = position
         self.orientation = orientation # The orientation is in radians, converted into an angle as "redians * 180 / Pi"
@@ -180,6 +180,7 @@ class EgoState:
         self.goal = goal
         self.trajectory = trajectory
         self.path_length = path_length
+        self.steering_angle = steering_angle
 
         
 class VehicleState:
@@ -207,9 +208,9 @@ class StateSpace:
         self.status = Status()
         
     def getPossibleActions(self):
-        return [-4, -2, 0.0, 2]
+        return [-5, -2.5, 0.0, 2.5]
         
-    def takeAction(self, action, dt = 0.1):
+    def takeAction(self, action, dt = 0.5):
         state = deepcopy(self)
         
         # Update next ego state
@@ -242,7 +243,7 @@ class StateSpace:
         state.ego.position[1] = weight * (waypoint_right.position[1] - waypoint_left.position[1]) + waypoint_left.position[1]
         state.ego.orientation = weight * (waypoint_right.orientation - waypoint_left.orientation) + waypoint_left.orientation
         state.ego.velocity += action * dt
-        state.ego.time_step += 1
+        state.ego.time_step += 5
         
         new_ego_state = State(position=state.ego.position, velocity=state.ego.velocity, orientation=state.ego.orientation, time_step =state.ego.time_step)
         state.ego.trajectory.append(new_ego_state)
@@ -398,7 +399,7 @@ class StateSpace:
             return -2000 - ego_speed ** 2 if self.status.is_collided else 1000
         
         # speed reward: 0 reward when 8.33 ~ 16.67 m/s(30 ~ 60 km/h); out of the range negative reward        
-        speed_reward = 2.0 * (ego_speed - 8.33) if ego_speed < 8.33 else (
+        speed_reward = 5.0 * (ego_speed - 8.33) if ego_speed < 8.33 else (
             0 if ego_speed < 16.67 else 4 * (16.67 - ego_speed))
         # action reward
         action_reward = -0.1 if action != 0 else 0
@@ -427,6 +428,7 @@ class Exp3():
     def __init__(self, gamma, n_arms):
         self.gamma = gamma
         self.weights = [1.0 for i in range(n_arms)]
+        
 
     def select_arm(self):
         n_arms = len(self.weights)
@@ -455,10 +457,14 @@ class Exp3():
 mcts
 """
 
+strategyset = [0.001, 1, 1000]
+# ind = 0
+normalized_score = [0.0000001]
+exp3 = Exp3(0.5, len(strategyset))
 
 def randomPolicy(state):
     accum_reward = 0
-    for i in range(8):
+    for i in range(6):
         if not state.isTerminal():
             action = random.choice(state.getPossibleActions())
             state = state.takeAction(action)
@@ -488,8 +494,8 @@ class treeNode():
 
 
 class mcts():
-    def __init__(self, timeLimit=None, iterationLimit=None, explorationConstant=0,
-                 rolloutPolicy=randomPolicy):
+    def __init__(self, timeLimit=None, iterationLimit=None, explorationConstant=1,
+                 rolloutPolicy=randomPolicy, index=0):
         if timeLimit != None:
             if iterationLimit != None:
                 raise ValueError("Cannot have both a time limit and an iteration limit")
@@ -506,6 +512,7 @@ class mcts():
             self.limitType = 'iterations'
         self.explorationConstant = explorationConstant
         self.rollout = rolloutPolicy
+        self.index = index
 
     def search(self, initialState, needDetails=False):
         self.root = treeNode(initialState, None)
@@ -518,6 +525,7 @@ class mcts():
         else:
             for i in range(self.searchLimit):
                 self.executeRound()
+        
 
         bestChild = self.getBestChild(self.root, self.explorationConstant)
         action = (action for action, node in self.root.children.items() if node is bestChild).__next__()
@@ -535,14 +543,24 @@ class mcts():
         node = self.selectNode(self.root)
         reward = self.rollout(node.state)
         self.backpropogate(node, reward)
-
+       
     def selectNode(self, node):
+        score = []
         while not node.isTerminal:
             if node.isFullyExpanded:
-                node = self.getBestChild(node, self.explorationConstant)
+                node = self.getBestChild(node, strategyset[self.index])
+                
+                if not node.isFullyExpanded:
+                    score.append(node.totalReward / node.numVisits)
+                    normalized_score.append(np.mean(score))
+                    exp3.update(self.index, (np.mean(score) - min(normalized_score)) / (max(normalized_score) - min(normalized_score)))
+                    print(exp3.weights)
+                    self.index = exp3.select_arm()
+                
             else:
                 # print(node, node.children)
                 return self.expand(node)
+        
         return node
 
     def expand(self, node):
@@ -568,8 +586,7 @@ class mcts():
         bestValue = float("-inf")
         bestNodes = []
         for child in node.children.values():
-            nodeValue = child.totalReward / child.numVisits + explorationValue * math.sqrt(
-                2 * math.log(node.numVisits) / child.numVisits)
+            nodeValue = child.totalReward / child.numVisits + explorationValue * math.sqrt(math.log(node.numVisits) / child.numVisits)
             if nodeValue > bestValue:
                 bestValue = nodeValue
                 bestNodes = [child]
@@ -586,7 +603,7 @@ class CommonroadEnv():
         self.state = StateSpace()
         # self.time_step = 0
         self.episode = -1
-        self.dt = 0.1
+        self.dt = 0.5
         self.reward = 0
         self.done = False
         self.action = 0
@@ -697,10 +714,12 @@ class CommonroadEnv():
             self.state.ego.position[1] = weight * (waypoint_right.position[1] - waypoint_left.position[1]) + waypoint_left.position[1]
             self.state.ego.orientation = weight * (waypoint_right.orientation - waypoint_left.orientation) + waypoint_left.orientation
             self.state.ego.velocity += action * self.dt
+            curvature_s = weight * (waypoint_right.curvature - waypoint_left.curvature) + waypoint_left.curvature
+            self.state.ego.steering_angle = np.arctan(curvature_s * self.state.ego.shape.length)
 
             if self.state.ego.velocity < 0:
                 self.state.ego.velocity = 0.0
-            self.state.ego.time_step = self.state.ego.time_step + 1
+            self.state.ego.time_step = self.state.ego.time_step + 5
 
             for vehicle in self.state.vehicles:
                 if vehicle.type == 'dynamic':
@@ -709,7 +728,7 @@ class CommonroadEnv():
                     vehicle.velocity = self.get_obstacle_state_at_time()['dynamic'][vehicle.ID].velocity
                     vehicle.path_length = (np.array(vehicle.path_length) + vehicle.velocity * self.dt).tolist()
 
-            new_ego_state = State(position = self.state.ego.position, velocity = self.state.ego.velocity, orientation = self.state.ego.orientation, time_step = self.state.ego.time_step, steering_angle=0)
+            new_ego_state = State(position = self.state.ego.position, velocity = self.state.ego.velocity, orientation = self.state.ego.orientation, time_step = self.state.ego.time_step, steering_angle=self.state.ego.steering_angle)
             self.state.ego.trajectory.append(deepcopy(new_ego_state))
             self.done = self.is_done()
             self.reward = self.get_reward()
@@ -747,7 +766,7 @@ class CommonroadEnv():
                 
         # speed reward: 0 reward when 8.33 ~ 16.67 m/s(30 ~ 60 km/h); out of the range negative reward
         
-        speed_reward = 2.0 * (self.state.ego.velocity - 8.33) if self.state.ego.velocity < 8.33 else (
+        speed_reward = 5.0 * (self.state.ego.velocity - 8.33) if self.state.ego.velocity < 8.33 else (
             0 if self.state.ego.velocity < 16.67 else 4 * (16.67 - self.state.ego.velocity))
         # action reward
         action_reward = -0.1 if self.action != 0 else 0
@@ -763,7 +782,8 @@ class CommonroadEnv():
     
     def is_collided(self):
         cc = create_collision_checker(scenario) 
-        ego_trajectory = Trajectory(0, self.state.ego.trajectory)
+        # ego_trajectory = Trajectory(0, self.state.ego.trajectory)
+        ego_trajectory = Trajectory(self.state.ego.time_step, [State(time_step=self.state.ego.time_step, position=self.state.ego.position, orientation=self.state.ego.orientation)])
         
         # create a TrajectoryPrediction object consisting of the trajectory and the shape of the ego vehicle
         traj_pred = TrajectoryPrediction(trajectory=ego_trajectory, shape=self.state.ego.shape)
@@ -854,17 +874,14 @@ import matplotlib.pyplot as plt
 from collections import deque
 
 if __name__ == "__main__":
-    
+
     env = CommonroadEnv(scenario, planning_problem_set)
     env.start()
     episodes = [i for i in range(1)]
     scores = []
     average_scores = []
-    normalized_score = [0.0000001]
     scores_window = deque(maxlen=1)
-    actions = [-4, -2, 0.0, 2]
-    strategyset = [0.001, 1, 1000]
-    exp3 = Exp3(0.5, len(strategyset))
+    actions = [-5, -2.5, 0.0, 2.5]
     df_evaluation = pd.DataFrame(columns=['success_rate', 'steps', 'collision_speed', 'score', 'runtime'])
 
 
@@ -872,23 +889,22 @@ if __name__ == "__main__":
     for episode in episodes:
         score = 0
         state = env.reset()
-        index = exp3.select_arm()
-        searcher = mcts(iterationLimit=70, explorationConstant=strategyset[index])
+        searcher = mcts(iterationLimit=100)
+        ind = 0
         t1 = time.time()
         while True:
             mcts_state = state
             action = searcher.search(initialState=mcts_state)
             state, reward, done = env.step(action)
-            print(reward, env.is_collided(), env.state.ego.velocity, env.state.ego.time_step)
+            print(reward, env.is_collided(), env.state.ego.velocity, env.state.ego.time_step, env.state.ego.steering_angle)
             score += reward
 
             if done:
                 t2 = time.time()
-                normalized_score.append(score)
-                exp3.update(index, (score - min(normalized_score)) / (max(normalized_score) - min(normalized_score)))
                 
                 if env.is_reached():
                     success = 1
+                        
                 else:
                     success = 0
                 df_evaluation = df_evaluation.append(pd.Series({'success_rate': success, 
@@ -929,3 +945,4 @@ if __name__ == "__main__":
     if not os.path.isdir(dir_path_csv):
         os.makedirs(dir_path_csv)
     df_evaluation.to_csv(dir_path_csv + '/' + str(datetime.now().strftime('%Y_%m_%d_%H_%M_%S')) + '.csv', index = True, sep = ' ', float_format='%.4f')
+
